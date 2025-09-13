@@ -1,9 +1,10 @@
 
-import React, { useState } from 'react';
-import { View, StyleSheet, Modal, Text, Button, TextInput, Alert } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, StyleSheet, Modal, Text, Button, TextInput, Alert, ScrollView } from 'react-native';
 import { Calendar } from 'react-native-calendars';
 import Slider from '@react-native-community/slider';
 import { supabase } from '../utils/supabaseClient';
+import Constants from 'expo-constants';
 
 export default function CalendarScreen() {
   const [selectedDate, setSelectedDate] = useState(null);
@@ -12,8 +13,38 @@ export default function CalendarScreen() {
   const [note, setNote] = useState('');
   const [records, setRecords] = useState({});
   const [loading, setLoading] = useState(false);
+  const [showAnalysis, setShowAnalysis] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState('');
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [selectedDateRange, setSelectedDateRange] = useState({
+    from: null,
+    to: null,
+  });
 
   const handleDayPress = async (day) => {
+    // If we're selecting a date range
+    if (selectedDateRange.from && !selectedDateRange.to) {
+      // Don't allow selecting a date before the start date
+      if (day.dateString < selectedDateRange.from) {
+        Alert.alert('날짜 선택 오류', '시작 날짜보다 이전 날짜를 선택할 수 없습니다');
+        return;
+      }
+      setSelectedDateRange({
+        ...selectedDateRange,
+        to: day.dateString,
+      });
+      return;
+    }
+
+    if (!selectedDateRange.from) {
+      setSelectedDateRange({
+        from: day.dateString,
+        to: null,
+      });
+      return;
+    }
+
+    // Normal day selection for recording
     setSelectedDate(day.dateString);
     const user_id = 'test_user';
     const { data, error } = await supabase
@@ -53,12 +84,80 @@ export default function CalendarScreen() {
     }
   }
 
+  const handleAnalyze = async () => {
+    if (!selectedDateRange.from || !selectedDateRange.to) {
+      Alert.alert('분석 실패', '날짜 범위를 선택해주세요');
+      return;
+    }
+
+    setAnalysisLoading(true);
+    try {
+      const response = await fetch(`${Constants.manifest.extra.backendUrl}/analyze`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: selectedDateRange.from,
+          to: selectedDateRange.to,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || '분석 중 오류가 발생했습니다');
+      }
+
+      setAnalysisResult(data.result);
+      setShowAnalysis(true);
+    } catch (error) {
+      Alert.alert('분석 실패', error.message);
+    } finally {
+      setAnalysisLoading(false);
+    }
+  }
 
   return (
     <View style={styles.container}>
-      <Calendar onDayPress={handleDayPress} markedDates={Object.fromEntries(
-        Object.entries(records).map(([date, rec]) => [date, { marked: true }])
-      )} />
+      <Calendar
+        onDayPress={handleDayPress}
+        markingType={'period'}
+        markedDates={{
+          ...Object.fromEntries(
+            Object.entries(records).map(([date, rec]) => [date, { marked: true }])
+          ),
+          ...(selectedDateRange.from && {
+            [selectedDateRange.from]: {
+              startingDay: true,
+              color: '#50cebb',
+              textColor: 'white',
+            },
+          }),
+          ...(selectedDateRange.to && {
+            [selectedDateRange.to]: {
+              endingDay: true,
+              color: '#50cebb',
+              textColor: 'white',
+            },
+          }),
+        }}
+      />
+      <View style={styles.buttonContainer}>
+        <Button
+          title="날짜 범위 선택 시작"
+          onPress={() => setSelectedDateRange({ from: null, to: null })}
+        />
+        <Text style={styles.dateRangeText}>
+          {selectedDateRange.from ? `${selectedDateRange.from} ~ ${selectedDateRange.to || '선택 중'}` : '날짜 범위를 선택하세요'}
+        </Text>
+        <Button
+          title="분석하기"
+          onPress={handleAnalyze}
+          disabled={!selectedDateRange.from || !selectedDateRange.to || analysisLoading}
+        />
+      </View>
+
+      {/* Record Modal */}
       <Modal visible={modalVisible} animationType="slide" transparent={true}>
         <View style={styles.modalContainer}>
           <View style={styles.modalContent}>
@@ -85,6 +184,19 @@ export default function CalendarScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Analysis Modal */}
+      <Modal visible={showAnalysis} animationType="slide" transparent={true}>
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>분석 결과</Text>
+            <ScrollView style={styles.analysisScroll}>
+              <Text style={styles.analysisText}>{analysisResult}</Text>
+            </ScrollView>
+            <Button title="닫기" onPress={() => setShowAnalysis(false)} />
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -94,6 +206,14 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#fff',
     paddingTop: 40,
+  },
+  buttonContainer: {
+    padding: 15,
+    gap: 10,
+  },
+  dateRangeText: {
+    textAlign: 'center',
+    marginVertical: 10,
   },
   modalContainer: {
     flex: 1,
@@ -107,6 +227,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: 'center',
     width: 300,
+    maxHeight: '80%',
   },
   modalTitle: {
     fontSize: 18,
@@ -121,5 +242,13 @@ const styles = StyleSheet.create({
     width: '100%',
     marginBottom: 10,
   },
+  analysisScroll: {
+    maxHeight: 300,
+    width: '100%',
+    marginBottom: 10,
+  },
+  analysisText: {
+    fontSize: 16,
+    lineHeight: 24,
+  },
 });
-// ...existing code...

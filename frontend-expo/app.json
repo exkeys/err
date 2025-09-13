@@ -43,6 +43,12 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "backendUrl": "http://192.168.212.48:5001",
+      "eas": {
+        "projectId": "your-project-id"
+      }
     }
   }
 }
