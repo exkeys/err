@@ -11,8 +11,12 @@ class ApiClient {
 
     try {
       // Constants 설정에서 백엔드 URL 가져오기
-      this.baseUrl = 'http://192.168.212.48:5001';
-      console.log('Using hardcoded URL:', this.baseUrl);
+      const backendUrl = Constants.expoConfig?.extra?.backendUrl;
+      if (!backendUrl) {
+        throw new Error('Backend URL is not configured in app.json');
+      }
+      this.baseUrl = backendUrl;
+      console.log('Using backend URL:', this.baseUrl);
 
       // 서버 연결 테스트
       try {

@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import dayjs from "dayjs";
+import Constants from 'expo-constants';
 
 
 // 1️⃣ 7주간 데이터 조회
@@ -13,7 +14,11 @@ async function analyzeData(data, range = "7주간") {
   if (!data.length) return "분석할 데이터가 없습니다.";
   // 백엔드 분석 API 호출
   try {
-  const res = await fetch("http://192.168.212.48:5001/analyze", {
+  const backendUrl = Constants.expoConfig?.extra?.backendUrl;
+  if (!backendUrl) {
+    throw new Error('Backend URL is not configured');
+  }
+  const res = await fetch(`${backendUrl}/analyze`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ data, range })

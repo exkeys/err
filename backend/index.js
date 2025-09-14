@@ -35,15 +35,19 @@ const openai = new OpenAI({
 // Express app setup
 const app = express();
 
-// Debug middleware
-app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
-  next();
-});
-
-// Middleware
+// Middleware for CORS and JSON parsing
 app.use(cors());
 app.use(express.json());
+
+// Simple request logging
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.url} - ${res.statusCode} - ${duration}ms`);
+  });
+  next();
+});
 
 // Rate limiter
 const limiter = rateLimit({
@@ -97,11 +101,35 @@ app.post('/record', async (req, res) => {
 // Analysis endpoint
 async function analyzeHandler(req, res) {
   try {
-    const { range, from, to } = req.method === 'GET' ? req.query : req.body;
+    // Validate the request body
+    if (!req.body || typeof req.body !== 'object') {
+      return res.status(400).json({
+        error: 'Invalid request',
+        message: 'Request body must be a valid JSON object',
+        received: typeof req.body
+      });
+    }
+
+    // Extract and log parameters
+    const { range, from, to } = req.body;
+    console.log('Request parameters:', { range, from, to });
+
+    // Validate parameters
+    if (range && (from || to)) {
+      return res.status(400).json({
+        error: 'Invalid parameters',
+        message: 'Provide either range OR from/to dates, not both',
+        examples: [
+          { range: 'daily' },
+          { from: '2025-09-01', to: '2025-09-07' }
+        ]
+      });
+    }
 
     if (!range && (!from || !to)) {
-      return res.status(400).json({ 
-        error: 'Missing range or from/to parameters',
+      return res.status(400).json({
+        error: 'Missing parameters',
+        message: 'Provide either range OR both from and to dates',
         examples: [
           { range: 'daily' },
           { from: '2025-09-01', to: '2025-09-07' }
@@ -136,6 +164,8 @@ async function analyzeHandler(req, res) {
       toDate = to;
     }
 
+    console.log('Querying Supabase for date range:', { fromDate, toDate });
+    
     const { data, error } = await supabase
       .from('records')
       .select('*')
@@ -144,14 +174,18 @@ async function analyzeHandler(req, res) {
       .order('date', { ascending: true });
 
     if (error) {
+      console.error('Supabase query error:', error);
       return res.status(500).json({ error: error.message });
     }
 
     if (!data || data.length === 0) {
+      console.log('No records found for date range:', { fromDate, toDate });
       return res.json({ 
         result: 'No data found for the specified period. Please record some entries first.'
       });
     }
+
+    console.log('Found records:', data.length);
 
     const formatted = data
       .map(row => {
@@ -160,29 +194,47 @@ async function analyzeHandler(req, res) {
       })
       .join('\n');
 
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4',
-      messages: [
-        { 
-          role: 'system', 
-          content: 'You are an empathetic counselor who specializes in emotional analysis. Understand user emotions and provide constructive advice.'
-        },
-        { 
-          role: 'user', 
-          content: `Here is the user's condition data:\n${formatted}\n\nPlease provide a comprehensive analysis including:\n1. Overall patterns\n2. Notable changes or trends\n3. Suggestions for improvement\n\nUse a warm and friendly tone, summarize in 3-4 sentences.`
-        }
-      ],
-      max_tokens: 500,
-      temperature: 0.7
-    });
+    console.log('Formatted data for OpenAI:', formatted);
+    
+    let completion;
+    try {
+      console.log('Sending request to OpenAI with formatted data:', formatted);
+      
+      completion = await openai.chat.completions.create({
+        model: 'gpt-4',
+        messages: [
+          { 
+            role: 'system', 
+            content: 'You are an empathetic counselor who specializes in emotional analysis. Always respond in Korean with warm and friendly tone. Never use English in your responses.'
+          },
+          { 
+            role: 'user', 
+            content: `다음은 사용자의 컨디션 데이터입니다:\n${formatted}\n\n다음 내용을 포함하여 종합적인 분석을 해주세요:\n1. 전반적인 패턴\n2. 주목할만한 변화나 트렌드\n3. 개선을 위한 제안\n\n따뜻하고 친근한 톤으로 3-4문장으로 요약해주세요.`
+          }
+        ],
+        max_tokens: 500,
+        temperature: 0.7
+      });
+      
+      console.log('OpenAI API response received:', {
+        status: 'success',
+        content: completion.choices?.[0]?.message?.content
+      });
+    } catch (openaiError) {
+      console.error('OpenAI API error:', openaiError);
+      throw new Error(`OpenAI API error: ${openaiError.message}`);
+    }
 
-    const aiResponse = completion.choices?.[0]?.message?.content || 'Unable to generate analysis';
+    const aiResponse = completion?.choices?.[0]?.message?.content || 'Unable to generate analysis';
     res.json({ result: aiResponse });
 
   } catch (error) {
+    console.error('Analysis error:', error);
+    console.error('Stack trace:', error.stack);
     res.status(500).json({ 
       error: 'Analysis error',
-      details: error.message 
+      details: error.message,
+      stack: error.stack
     });
   }
 }
@@ -211,7 +263,7 @@ app.post('/chat', async (req, res) => {
       messages: [
         { 
           role: 'system', 
-          content: 'You are an AI assistant specializing in emotional care. Show empathy and engage warmly with users. Provide advice on emotional recording, stress management, and mental health.'
+          content: 'You are an AI assistant specializing in emotional care. You must always respond in Korean language with a warm and friendly tone. Never use English in your responses. Show empathy and provide advice on emotional wellbeing, stress management, and mental health.'
         },
         { role: 'user', content: message }
       ],
