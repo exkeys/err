@@ -15,7 +15,7 @@ export default function RootLayout() {
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack
+        <Stack
         screenOptions={{
           headerTitleStyle: {
             fontSize: 18,

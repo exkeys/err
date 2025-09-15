@@ -1,10 +1,13 @@
-
 import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, Modal, Text, Button, TextInput, Alert, ScrollView, Pressable, ActivityIndicator } from 'react-native';
+import { View, StyleSheet, Modal, Text, Button, TextInput, Alert, ActivityIndicator } from 'react-native';
 import { Calendar } from 'react-native-calendars';
 import Slider from '@react-native-community/slider';
 import { supabase } from '../utils/supabaseClient';
-import Constants from 'expo-constants';
+import { checkWeeklyDataCompletion } from '../utils/weeklyDataChecker';
+import dayjs from 'dayjs';
+import weekday from 'dayjs/plugin/weekday';
+
+dayjs.extend(weekday);
 
 export default function CalendarScreen() {
   const [selectedDate, setSelectedDate] = useState(null);
@@ -13,36 +16,70 @@ export default function CalendarScreen() {
   const [note, setNote] = useState('');
   const [records, setRecords] = useState({});
   const [loading, setLoading] = useState(false);
-  const [showAnalysis, setShowAnalysis] = useState(false);
-  const [analysisResult, setAnalysisResult] = useState('');
-  const [analysisLoading, setAnalysisLoading] = useState(false);
-  const [selectedDateRange, setSelectedDateRange] = useState({
-    from: null,
-    to: null,
-  });
+  const [weeklyStatus, setWeeklyStatus] = useState(null);
+
+  // 컴포넌트 마운트 시 주간 상태 체크
+  useEffect(() => {
+    checkCurrentWeekStatus();
+  }, []);
+
+  // 주간 상태 체크
+  async function checkCurrentWeekStatus() {
+    try {
+      const result = await checkWeeklyDataCompletion();
+      setWeeklyStatus(result);
+    } catch (error) {
+      console.error('주간 상태 체크 오류:', error);
+    }
+  }
+
+  // 저장된 데이터가 변경될 때마다 주간 데이터 체크
+  useEffect(() => {
+    if (selectedDate) {
+      console.log('Checking weekly data for date:', selectedDate);
+      const dateObj = dayjs(selectedDate);
+      const weekStart = dateObj.weekday(1); // 1은 월요일
+      const weekDates = [];
+      for (let i = 0; i < 7; i++) {
+        weekDates.push(weekStart.add(i, 'day').format('YYYY-MM-DD'));
+      }
+      console.log('Week dates (월~일):', weekDates);
+
+      // supabase에서 해당 주의 모든 날짜 기록 fetch
+      const checkWeekRecords = async () => {
+        console.log('Fetching records for week...');
+        const { data: weekRecords, error: weekError } = await supabase
+          .from('records')
+          .select('date, fatigue, notes')
+          .eq('user_id', 'test_user')
+          .in('date', weekDates);
+        
+        if (weekError) {
+          console.error('Error fetching week records:', weekError);
+          return;
+        }
+
+        console.log('Found records for dates:', weekRecords?.map(r => r.date));
+        console.log('Total records found:', weekRecords?.length);
+        
+        if (weekRecords && weekRecords.length === 7) {
+          console.log('Complete week found! Suggesting analysis for:', {
+            from: weekDates[0],
+            to: weekDates[6],
+            records: weekRecords
+          });
+          suggestAnalysis({ from: weekDates[0], to: weekDates[6] });
+        } else {
+          console.log('Week not complete yet. Need more records.');
+        }
+      };
+      
+      checkWeekRecords();
+    }
+  }, [records, selectedDate]);
 
   const handleDayPress = async (day) => {
-    // If we're selecting a date range
-    if (selectedDateRange.from && !selectedDateRange.to) {
-      // Don't allow selecting a date before the start date
-      if (day.dateString < selectedDateRange.from) {
-        Alert.alert('날짜 선택 오류', '시작 날짜보다 이전 날짜를 선택할 수 없습니다');
-        return;
-      }
-      setSelectedDateRange({
-        ...selectedDateRange,
-        to: day.dateString,
-      });
-      return;
-    }
-
-    if (!selectedDateRange.from) {
-      setSelectedDateRange({
-        from: day.dateString,
-        to: null,
-      });
-      return;
-    }
+    // 날짜 범위 및 분석 관련 로직 제거
 
     // Normal day selection for recording
     setSelectedDate(day.dateString);
@@ -74,8 +111,8 @@ export default function CalendarScreen() {
         { 
           user_id, 
           date: selectedDate, 
-          fatigue: parseInt(fatigue), // fatigue를 정수로 변환
-          notes: note || null // 빈 문자열 대신 null 사용
+          fatigue: parseInt(fatigue),
+          notes: note || null
         },
         { onConflict: ['user_id', 'date'] }
       );
@@ -88,115 +125,47 @@ export default function CalendarScreen() {
         [selectedDate]: { fatigue, note },
       });
       setModalVisible(false);
-    }
-  }
-
-  const handleAnalyze = async () => {
-    if (!selectedDateRange.from || !selectedDateRange.to) {
-      Alert.alert('분석 실패', '날짜 범위를 선택해주세요');
-      return;
-    }
-
-    setAnalysisLoading(true);
-    try {
-      // backendUrl이 설정되어 있는지 확인
-      const backendUrl = Constants.expoConfig?.extra?.backendUrl;
-      console.log('Backend URL:', backendUrl);
       
-      if (!backendUrl) {
-        throw new Error('Backend URL이 설정되지 않았습니다');
-      }
-
-      const requestBody = {
-        from: selectedDateRange.from,
-        to: selectedDateRange.to,
-      };
+      // 저장 후 주간 상태 다시 체크
+      await checkCurrentWeekStatus();
       
-      console.log('Sending request:', {
-        url: `${backendUrl}/analyze`,
-        method: 'POST',
-        body: requestBody
-      });
-      
-      const response = await fetch(`${backendUrl}/analyze`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        body: JSON.stringify(requestBody),
-      });
-
-      const data = await response.json();
-      console.log('Server response:', data);
-      
-      if (!response.ok) {
-        throw new Error(
-          typeof data.error === 'string' 
-            ? data.error 
-            : data.message || '분석 중 오류가 발생했습니다'
+      // 주간 데이터가 완성되었는지 확인하고 알림
+      const updatedStatus = await checkWeeklyDataCompletion();
+      if (updatedStatus.isComplete && !weeklyStatus?.isComplete) {
+        Alert.alert(
+          '주간 기록 완성! 🎉',
+          '이번 주 7일간의 기록이 모두 완성되었습니다!\n챗봇 탭에서 주간 분석을 확인해보세요.',
+          [{ text: '확인', style: 'default' }]
         );
       }
-
-      if (!data.result) {
-        throw new Error('서버 응답에 분석 결과가 없습니다');
-      }
-
-      setAnalysisResult(data.result);
-      setShowAnalysis(true);
-    } catch (error) {
-      console.error('Analysis error:', error);
-      Alert.alert('분석 실패', error.message);
-    } finally {
-      setAnalysisLoading(false);
     }
-  }
+  };
 
   return (
     <View style={styles.container}>
+      {/* 주간 상태 표시 */}
+      {weeklyStatus && (
+        <View style={styles.weeklyStatusContainer}>
+          <Text style={styles.weeklyStatusText}>
+            이번 주 기록: {weeklyStatus.recordedDays}/7일
+            {weeklyStatus.isComplete && " ✅ 완성!"}
+          </Text>
+          {weeklyStatus.isComplete && (
+            <Text style={styles.weeklyCompleteText}>
+              챗봇 탭에서 주간 분석을 받아보세요! 🤖
+            </Text>
+          )}
+        </View>
+      )}
+
       <Calendar
         onDayPress={handleDayPress}
-        markingType={'period'}
         markedDates={{
           ...Object.fromEntries(
             Object.entries(records).map(([date, rec]) => [date, { marked: true }])
-          ),
-          ...(selectedDateRange.from && {
-            [selectedDateRange.from]: {
-              startingDay: true,
-              color: '#50cebb',
-              textColor: 'white',
-            },
-          }),
-          ...(selectedDateRange.to && {
-            [selectedDateRange.to]: {
-              endingDay: true,
-              color: '#50cebb',
-              textColor: 'white',
-            },
-          }),
+          )
         }}
       />
-      <View style={styles.buttonContainer}>
-        <Button
-          title="날짜 범위 선택 시작"
-          onPress={() => setSelectedDateRange({ from: null, to: null })}
-        />
-        <Text style={styles.dateRangeText}>
-          {selectedDateRange.from ? `${selectedDateRange.from} ~ ${selectedDateRange.to || '선택 중'}` : '날짜 범위를 선택하세요'}
-        </Text>
-        <Pressable
-          style={({ pressed }) => [
-            styles.analyzeButton,
-            { opacity: pressed ? 0.8 : 1 },
-            (!selectedDateRange.from || !selectedDateRange.to || analysisLoading) && styles.analyzeButtonDisabled
-          ]}
-          onPress={handleAnalyze}
-          disabled={!selectedDateRange.from || !selectedDateRange.to || analysisLoading}
-        >
-          <Text style={styles.analyzeButtonText}>분석하기</Text>
-        </Pressable>
-      </View>
 
       {/* Record Modal */}
       <Modal visible={modalVisible} animationType="slide" transparent={true}>
@@ -233,25 +202,7 @@ export default function CalendarScreen() {
         </View>
       </Modal>
 
-      {/* Analysis Modal */}
-      <Modal visible={showAnalysis} animationType="slide" transparent={true}>
-        <View style={styles.modalContainer}>
-          <View style={styles.modalContent} role="dialog" aria-modal="true" aria-labelledby="analysis-title">
-            <Text style={styles.modalTitle} role="heading" nativeID="analysis-title">분석 결과</Text>
-            <ScrollView 
-              style={styles.analysisScroll}
-              accessible={true}
-              accessibilityLabel="분석 결과 내용"
-            >
-              <Text style={styles.analysisText}>{analysisResult}</Text>
-            </ScrollView>
-            <Button 
-              title="닫기" 
-              onPress={() => setShowAnalysis(false)} 
-              accessibilityLabel="분석 결과 모달 닫기" />
-          </View>
-        </View>
-      </Modal>
+  {/* 분석 결과 모달 및 버튼 완전 제거됨 */}
     </View>
   );
 }
@@ -260,43 +211,31 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#fff',
-    paddingTop: 40,
-    WebkitTextSizeAdjust: '100%',
-    MozTextSizeAdjust: '100%',
-    textSizeAdjust: '100%',
+    paddingTop: 40
   },
-  analyzeButton: {
-    backgroundColor: '#1E90FF',
-    paddingVertical: 12,
-    paddingHorizontal: 20,
+  weeklyStatusContainer: {
+    padding: 10,
+    backgroundColor: '#f0f9ff',
+    marginBottom: 10,
     borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 10,
+    marginHorizontal: 10
   },
-  analyzeButtonDisabled: {
-    backgroundColor: '#B0C4DE',
-  },
-  analyzeButtonText: {
-    color: 'white',
+  weeklyStatusText: {
     fontSize: 16,
-    fontWeight: 'bold',
-  },
-  buttonContainer: {
-    padding: 15,
-    rowGap: 10, // gap 대신 rowGap 사용
-  },
-  dateRangeText: {
     textAlign: 'center',
-    marginVertical: 10,
-    WebkitUserSelect: 'none',
-    userSelect: 'none',
+    color: '#0369a1'
+  },
+  weeklyCompleteText: {
+    fontSize: 14,
+    textAlign: 'center',
+    color: '#059669',
+    marginTop: 5
   },
   modalContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.3)',
+    backgroundColor: 'rgba(0,0,0,0.3)'
   },
   modalContent: {
     backgroundColor: '#fff',
@@ -304,15 +243,12 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: 'center',
     width: 300,
-    minHeight: 200, // auto 대신 실제 값 사용
-    maxHeight: '80%',
+    minHeight: 200
   },
   modalTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    marginBottom: 10,
-    WebkitUserSelect: 'text',
-    userSelect: 'text',
+    marginBottom: 10
   },
   input: {
     borderWidth: 1,
@@ -320,15 +256,6 @@ const styles = StyleSheet.create({
     borderRadius: 5,
     padding: 10,
     width: '100%',
-    marginBottom: 10,
-  },
-  analysisScroll: {
-    height: 300, // maxHeight 대신 height 사용
-    width: '100%',
-    marginBottom: 10,
-  },
-  analysisText: {
-    fontSize: 16,
-    lineHeight: 24,
-  },
+    marginBottom: 10
+  }
 });
